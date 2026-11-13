@@ -1,4 +1,4 @@
-# fb_bot.py — بوت فيسبوك ميسنجر لجيزي (بسيط)
+# main.py — بوت فيسبوك ميسنجر لجيزي (API الرسمي)
 import requests, json, os, logging
 from datetime import datetime, timedelta
 from flask import Flask, request
@@ -15,8 +15,11 @@ CLIENT_ID     = "87pIExRhxBb3_wGsA5eSEfyATloa"
 CLIENT_SECRET = "uf82p68Bgisp8Yg1Uz8Pf6_v1XYa"
 BASE_URL      = "https://apim.djezzy.dz"
 
-PROXY_URL = "http://VOdU7NxiOv20_custom_zone_DZ_st__city_sid_23611181_time_90:3149931@change6.owlproxy.com:7778"
-PROXIES   = {"http": PROXY_URL, "https": PROXY_URL}
+# ── الاتصال المباشر من الجزائر بدون بروكسي ──────────────────────────────
+# البوت يتصل مباشرة بخوادم جيزي وأوريدو الجزائر (لا بروكسي افتراضياً).
+# إن رغبت في تمرير بروكسي اختياري، ضع رابطه في متغير البيئة BOT_PROXY.
+_PROXY  = os.environ.get("BOT_PROXY", "").strip()
+PROXIES = {"http": _PROXY, "https": _PROXY} if _PROXY else None
 
 HEADERS = {
     "User-Agent": "MobileApp/3.0.4",
@@ -111,7 +114,7 @@ def get_remaining(psid: str, msisdn: str, key: str, dur_h: int) -> str | None:
     except Exception:
         return None
 
-# ═══════════ دوال جيزي ═══════════
+# ═══════════ دوال مساعدة ═══════════
 def clean_phone(raw: str) -> str | None:
     p = raw.strip().replace(" ", "").replace("-", "").replace(".", "")
     if p.startswith("+213"): p = "213" + p[4:]
@@ -126,6 +129,7 @@ def clean_phone(raw: str) -> str | None:
 def fmt_phone(msisdn: str) -> str:
     return "0" + msisdn[3:] if msisdn.startswith("213") else msisdn
 
+# ═══════════ دوال جيزي الرسمية ═══════════
 def send_otp(msisdn: str) -> tuple[int, str]:
     url = f"{BASE_URL}/mobile-api/oauth2/registration"
     params = {"msisdn": msisdn, "client_id": CLIENT_ID, "scope": "smsotp"}
@@ -218,6 +222,7 @@ def handle_message(psid: str, text: str):
                 return
             temp_data[psid] = {"msisdn": msisdn}
             code, _ = send_otp(msisdn)
+            
             if code in (200, 201):
                 user_states[psid] = "otp"
                 send_fb(psid, f"✅ تم إرسال الرمز إلى {fmt_phone(msisdn)}\n\nأدخل رمز OTP (6 أرقام):")
@@ -235,8 +240,11 @@ def handle_message(psid: str, text: str):
                 return
             msisdn = temp_data.get(psid, {}).get("msisdn", "")
             result, code = verify_otp(msisdn, text)
+            
             if code == 200 and result and "access_token" in result:
-                save_account(psid, msisdn, result["access_token"], result.get("refresh_token", ""))
+                token = result["access_token"]
+                rtoken = result.get("refresh_token", "")
+                save_account(psid, msisdn, token, rtoken)
                 user_states[psid] = "menu"
                 send_fb(psid, f"🎉 تم تسجيل الدخول!\n📱 {fmt_phone(msisdn)}\n\n" + main_menu())
             else:
@@ -269,6 +277,7 @@ def handle_message(psid: str, text: str):
         send_fb(psid, "⏳ جاري تفعيل الهدية...")
         res, code = djezzy_api("POST", f"subscribers/activate-product/{msisdn}", token,
                                {"packageCode": "GIFTWALKWIN2GO"})
+        
         if code in (200, 201):
             save_activation(psid, msisdn, "GIFT")
             rem = get_remaining(psid, msisdn, "GIFT", GIFT_DURATION_H)
@@ -314,6 +323,7 @@ def handle_message(psid: str, text: str):
             send_fb(psid, f"⏳ جاري تفعيل {name}...")
             res, code = djezzy_api("POST", f"subscribers/activate-product/{msisdn}", token,
                                    {"packageCode": pkg})
+            
             if code in (200, 201):
                 save_activation(psid, msisdn, offer_key)
                 rem = get_remaining(psid, msisdn, offer_key, dur)
