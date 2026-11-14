@@ -263,9 +263,15 @@ def handle_message(psid: str, text: str):
             return
 
         if state == "otp":
-            if not (text.isdigit() and len(text) == 6):
-                send_fb(psid, "⚠️ أدخل رمزاً مكوناً من 6 أرقام فقط (الذي وصلك في SMS).")
-                return
+    # إضافة: إذا أراد المستخدم الإلغاء أو البدء من جديد
+    if text.lower() in ("/start", "الغاء", "إلغاء", "بدء"):
+        user_states[psid] = "phone"
+        send_fb(psid, "🔄 تم الإلغاء.\n\n📱 يرجى إدخال رقم هاتفك (07XXXXXXXX):")
+        return
+        
+    if not (text.isdigit() and len(text) == 6):
+        send_fb(psid, "⚠️ أدخل رمزاً مكوناً من 6 أرقام فقط (الذي وصلك في SMS).")
+        return
             msisdn = temp_data.get(psid, {}).get("msisdn", "")
             result, code = verify_otp(msisdn, text)
             
