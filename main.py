@@ -1,4 +1,4 @@
-# main.py — بوت فيسبوك ميسنجر لجيزي (API الرسمي)
+# main.py — بوت فيسبوك ميسنجر لجيزي (عبر السيرفر الوسيط - نسخة احترافية)
 import requests, json, os, logging
 from datetime import datetime, timedelta
 from flask import Flask, request
@@ -10,22 +10,13 @@ FB_VERIFY_TOKEN      = "ed81ef48f38632edce82bcfd09d88636"
 FB_PAGE_ACCESS_TOKEN = "EAAajMFzLjAoBS2TFjxhRiiVmdYv7IF3a0ClunCzjf2dRlxND8Wgg8YuxbCiNppzDZBPUMgOJgK3T23MmWV8OlSePvTHlUwepdSzqiOLDpbQ6EP0ZBKnUHqLwJrvaFnV3l7TZC6xx2T3CaP2y9X92Py8x1PJsCLZA59DYMaZCIKyzU7lcZABJXujj1ew93doUIB8wpYj4T8wwZDZD"
 FB_API_URL           = "https://graph.facebook.com/v18.0/me/messages"
 
-# ═══════════ إعدادات جيزي ═══════════
-CLIENT_ID     = "87pIExRhxBb3_wGsA5eSEfyATloa"
-CLIENT_SECRET = "uf82p68Bgisp8Yg1Uz8Pf6_v1XYa"
-BASE_URL      = "https://apim.djezzy.dz"
-
-# ── الاتصال المباشر من الجزائر بدون بروكسي ──────────────────────────────
-# البوت يتصل مباشرة بخوادم جيزي وأوريدو الجزائر (لا بروكسي افتراضياً).
-# إن رغبت في تمرير بروكسي اختياري، ضع رابطه في متغير البيئة BOT_PROXY.
-_PROXY  = os.environ.get("BOT_PROXY", "").strip()
-PROXIES = {"http": _PROXY, "https": _PROXY} if _PROXY else None
+# ═══════════ إعدادات API الوسيط (الجديد) ═══════════
+DJEZZY_API_URL = "http://78.154.103.31:14442/v1/djezzy"
+DJEZZY_API_KEY = "dz_CB1KWTTDOCdHsoSjbkyR1DK9DeabAZUJxvOehmWw"
 
 HEADERS = {
-    "User-Agent": "MobileApp/3.0.4",
-    "accept-language": "fr",
     "Content-Type": "application/json",
-    "Accept": "application/json"
+    "X-API-Key": DJEZZY_API_KEY
 }
 
 SESSIONS_FILE = "fb_sessions.json"
@@ -47,7 +38,6 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 app = Flask(__name__)
-
 user_states: dict[str, str] = {}
 temp_data: dict[str, dict] = {}
 
@@ -124,48 +114,46 @@ def clean_phone(raw: str) -> str | None:
     elif len(p) == 9 and p.startswith("7"): p = "213" + p
     else: return None
     if not (len(p) == 12 and p.isdigit() and p.startswith("213")): return None
-    return p
+    # الـ API الوسيط يطلب الرقم بصيغة 07XXXXXXXX (10 أرقام)
+    return "0" + p[3:]
 
 def fmt_phone(msisdn: str) -> str:
-    return "0" + msisdn[3:] if msisdn.startswith("213") else msisdn
+    return msisdn
 
-# ═══════════ دوال جيزي الرسمية ═══════════
-def send_otp(msisdn: str) -> tuple[int, str]:
-    url = f"{BASE_URL}/mobile-api/oauth2/registration"
-    params = {"msisdn": msisdn, "client_id": CLIENT_ID, "scope": "smsotp"}
-    body = {"consent-agreement": [{"marketing-notifications": False}], "is-consent": True}
+# ═══════════ دوال API الوسيط الجديد ═══════════
+def send_otp(phone: str) -> tuple[int, str]:
     try:
-        r = requests.post(url, params=params, json=body, headers=HEADERS, proxies=PROXIES, timeout=15)
+        r = requests.post(f"{DJEZZY_API_URL}/otp/send", headers=HEADERS, json={"phone": phone}, timeout=20)
         log.info(f"send_otp [{r.status_code}]: {r.text[:200]}")
         return r.status_code, r.text
     except Exception as e:
         log.error(f"send_otp: {e}")
         return 500, str(e)
 
-def verify_otp(msisdn: str, otp: str) -> tuple[dict | None, int]:
-    url = f"{BASE_URL}/mobile-api/oauth2/token"
-    headers = {**HEADERS, "Content-Type": "application/x-www-form-urlencoded"}
-    data = (f"otp={otp}&mobileNumber={msisdn}&scope=djezzyAppV2"
-            f"&client_id={CLIENT_ID}&client_secret={CLIENT_SECRET}&grant_type=mobile")
+def verify_otp(phone: str, otp: str) -> tuple[dict | None, int]:
     try:
-        r = requests.post(url, data=data, headers=headers, proxies=PROXIES, timeout=15)
+        r = requests.post(f"{DJEZZY_API_URL}/otp/verify", headers=HEADERS, json={"phone": phone, "otp": otp}, timeout=20)
+        log.info(f"verify_otp [{r.status_code}]: {r.text[:200]}")
         return r.json(), r.status_code
     except Exception as e:
         log.error(f"verify_otp: {e}")
         return None, 500
 
-def djezzy_api(method: str, endpoint: str, token: str, body: dict = None) -> tuple[dict | None, int]:
-    url = f"{BASE_URL}/mobile-api/api/v1/{endpoint}"
-    headers = {**HEADERS, "Authorization": f"Bearer {token}"}
+def api_balance(phone: str) -> tuple[dict | None, int]:
     try:
-        if method == "GET":
-            r = requests.get(url, headers=headers, proxies=PROXIES, timeout=15)
-        else:
-            r = requests.post(url, headers=headers, json=body, proxies=PROXIES, timeout=15)
-        log.info(f"API {method} {endpoint} [{r.status_code}]: {r.text[:200]}")
+        r = requests.get(f"{DJEZZY_API_URL}/balance?phone={phone}", headers=HEADERS, timeout=20)
         return r.json(), r.status_code
     except Exception as e:
-        log.error(f"djezzy_api: {e}")
+        log.error(f"api_balance: {e}")
+        return None, 500
+
+def api_activate(phone: str, package_code: str) -> tuple[dict | None, int]:
+    try:
+        body = {"phone": phone, "package_code": package_code}
+        r = requests.post(f"{DJEZZY_API_URL}/activate", headers=HEADERS, json=body, timeout=20)
+        return r.json(), r.status_code
+    except Exception as e:
+        log.error(f"api_activate: {e}")
         return None, 500
 
 def extract_msg(res, default=""):
@@ -207,18 +195,58 @@ def offers_menu() -> str:
     txt += "\nأرسل رقم العرض للتفعيل\n0️⃣ للرجوع"
     return txt
 
+# ═══════════ الردود الذكية (Smart Fallback) ═══════════
+def smart_reply(text: str, is_logged_in: bool) -> str | None:
+    t = text.lower().strip()
+    
+    greetings = ["سلام", "صحا", "صباح", "مساء", "مرحبا", "أهلا", "اهلا", "هاي", "hello", "hi", "bonjour", "salam"]
+    if any(w in t for w in greetings):
+        return "👋 أهلاً بك! كيف يمكنني مساعدتك اليوم؟\n(اختر من القائمة أدناه 👇)" if is_logged_in else "👋 أهلاً بك في بوت جيزي!\n\n📱 يرجى إدخال رقم هاتفك (07XXXXXXXX) للبدء:"
+
+    thanks = ["شكرا", "مشكور", "يعطيك", "بارك الله", "merci", "thanks", "thx"]
+    if any(w in t for w in thanks):
+        return "🌹 على الرحب والسعة! نحن دائماً في خدمتك.\nإذا احتجت أي شيء آخر، اختر من القائمة." if is_logged_in else "🌹 على الرحب والسعة! يرجى إدخال رقم هاتفك للبدء:"
+
+    who = ["شكون", "من راك", "من أنت", "واش راك", "كيف حالك", "كيفك", "واش هذا", "بوت", "بوت واش يدير"]
+    if any(w in t for w in who):
+        return "🤖 أنا بوت جيزي الذكي!\nأقوم بتفعيل الهدية الأسبوعية، عرض الرصيد، وتفعيل العروض بضغطة زر.\n" + (main_menu() if is_logged_in else "📱 يرجى إدخال رقم هاتفك للبدء:")
+
+    help_words = ["مساعدة", "مساعده", "كيفاش", "كيف", "شرح", "help", "aide", "واش ندير"]
+    if any(w in t for w in help_words):
+        if is_logged_in: return "❓ كيف يمكنني مساعدتك؟\n\n" + main_menu()
+        else: return "❓ للبدء، يرجى إدخال رقم هاتفك (07XXXXXXXX)\n\nمثال: 0770123456"
+
+    gift_words = ["هدية", "هديه", "مجانا", "مجاني", "gift", "2gb", "2 go"]
+    if any(w in t for w in gift_words):
+        if is_logged_in: return "🎁 لتفعيل الهدية الأسبوعية (2GB مجاناً)، أرسل الرقم: 1"
+        else: return "🎁 لتفعيل الهدية، يجب تسجيل الدخول أولاً.\n📱 أدخل رقم هاتفك:"
+
+    offer_words = ["عرض", "عروض", "باقة", "باقات", "انترنت", "أنترنت", "نت", "جيجا", "go", "gb", "offer", "forfait"]
+    if any(w in t for w in offer_words):
+        if is_logged_in: return "🏷️ لعرض الباقات المتاحة، أرسل الرقم: 2"
+        else: return "📱 لتسجيل الدخول وعرض الباقات، يرجى إدخال رقم هاتفك:"
+
+    balance_words = ["رصيد", "فلوس", "دراهم", "solde", "balance", "credit", "كارت"]
+    if any(w in t for w in balance_words):
+        if is_logged_in: return "💰 لمعرفة رصيدك المالي، أرسل الرقم: 3"
+        else: return "📱 لتسجيل الدخول وعرض رصيدك، يرجى إدخال رقم هاتفك:"
+
+    if is_logged_in: return "🤖 لم أفهم قصدك تماماً، لكنني هنا لمساعدتك!\nيرجى اختيار أحد الخيارات من القائمة أدناه 👇\n\n" + main_menu()
+    else: return "🤖 يرجى إدخال رقم هاتفك (07XXXXXXXX) لنتمكن من مساعدتك في تسجيل الدخول:"
+
 # ═══════════ منطق البوت ═══════════
 def handle_message(psid: str, text: str):
     text = text.strip()
     user = get_user(psid)
     state = user_states.get(psid, "menu" if user.get("accounts") else "phone")
 
-    # ═════ تسجيل الدخول ═════
+    # ═════ حالة: غير مسجل (تسجيل الدخول) ═════
     if not user.get("accounts"):
         if state == "phone":
             msisdn = clean_phone(text)
             if not msisdn:
-                send_fb(psid, "⚠️ رقم خاطئ.\nأدخل رقم جيزي مثل: 0770123456")
+                reply = smart_reply(text, is_logged_in=False)
+                send_fb(psid, reply)
                 return
             temp_data[psid] = {"msisdn": msisdn}
             code, _ = send_otp(msisdn)
@@ -236,47 +264,45 @@ def handle_message(psid: str, text: str):
 
         if state == "otp":
             if not (text.isdigit() and len(text) == 6):
-                send_fb(psid, "⚠️ أدخل 6 أرقام فقط.")
+                send_fb(psid, "⚠️ أدخل رمزاً مكوناً من 6 أرقام فقط (الذي وصلك في SMS).")
                 return
             msisdn = temp_data.get(psid, {}).get("msisdn", "")
             result, code = verify_otp(msisdn, text)
             
-            if code == 200 and result and "access_token" in result:
-                token = result["access_token"]
+            if code == 200 and result and result.get("ok"):
+                token = result.get("token") or result.get("access_token") or "session_active"
                 rtoken = result.get("refresh_token", "")
                 save_account(psid, msisdn, token, rtoken)
                 user_states[psid] = "menu"
-                send_fb(psid, f"🎉 تم تسجيل الدخول!\n📱 {fmt_phone(msisdn)}\n\n" + main_menu())
+                send_fb(psid, f"🎉 تم تسجيل الدخول بنجاح!\n📱 {fmt_phone(msisdn)}\n\n" + main_menu())
             else:
-                send_fb(psid, "❌ الرمز خاطئ. أرسل /start")
+                send_fb(psid, "❌ الرمز خاطئ أو منتهي الصلاحية. أرسل /start للمحاولة مجدداً.")
             return
 
         user_states[psid] = "phone"
-        send_fb(psid, "👋 أهلاً بك في بوت جيزي!\n\n📱 أدخل رقم هاتفك (07XXXXXXXX):")
+        send_fb(psid, "👋 أهلاً بك في بوت جيزي الاحترافي!\n\n📱 أدخل رقم هاتفك (07XXXXXXXX):")
         return
 
-    # ═════ مستخدم مسجّل ═════
+    # ═════ حالة: مسجل دخول (القائمة الرئيسية) ═════
     msisdn = user["active"]
     if not msisdn:
         send_fb(psid, "❌ لا يوجد حساب نشط. أرسل /start")
         return
-    token = user["accounts"][msisdn]["token"]
 
     # ── الرجوع للقائمة ──
-    if text in ("0", "/menu", "قائمة", "/start", "رجوع"):
+    if text in ("0", "/menu", "قائمة", "/start", "رجوع", "الرجوع", "رجع"):
         user_states[psid] = "menu"
         send_fb(psid, main_menu())
         return
 
     # ── 1: الهدية الأسبوعية ──
-    if text == "1":
+    if text in ("1", "1️⃣"):
         rem = get_remaining(psid, msisdn, "GIFT", GIFT_DURATION_H)
         if rem:
             send_fb(psid, f"⏳ الهدية نشطة بالفعل.\n⏱️ المتبقي: {rem}\n\n" + main_menu())
             return
         send_fb(psid, "⏳ جاري تفعيل الهدية...")
-        res, code = djezzy_api("POST", f"subscribers/activate-product/{msisdn}", token,
-                               {"packageCode": "GIFTWALKWIN2GO"})
+        res, code = api_activate(msisdn, "GIFTWALKWIN2GO")
         
         if code in (200, 201):
             save_activation(psid, msisdn, "GIFT")
@@ -284,22 +310,25 @@ def handle_message(psid: str, text: str):
             send_fb(psid, f"🎁 تم تفعيل الهدية الأسبوعية!\n"
                           f"📦 2GB لمدة 7 أيام\n"
                           f"⏱️ المتبقي: {rem}\n\n" + main_menu())
-        elif code == 401:
-            send_fb(psid, "🔑 انتهت الجلسة. أرسل /start لتسجيل الدخول مجدداً.")
         else:
             msg = extract_msg(res) or "فشل التفعيل"
             send_fb(psid, f"⚠️ {msg}\n\n" + main_menu())
         return
 
     # ── 2: عرض العروض ──
-    if text == "2":
+    if text in ("2", "2️⃣"):
         user_states[psid] = "offers"
         send_fb(psid, offers_menu())
         return
 
     if user_states.get(psid) == "offers":
-        if text not in OFFERS:
-            send_fb(psid, "⚠️ رقم غير صحيح. أرسل رقم عرض من القائمة أو 0 للرجوع.")
+        if text not in OFFERS and text not in ("0", "0️⃣", "رجوع"):
+            reply = smart_reply(text, is_logged_in=True)
+            send_fb(psid, reply)
+            return
+        if text in ("0", "0️⃣", "رجوع"):
+            user_states[psid] = "menu"
+            send_fb(psid, main_menu())
             return
         pkg, name, dur = OFFERS[text]
         rem = get_remaining(psid, msisdn, text, dur)
@@ -313,7 +342,7 @@ def handle_message(psid: str, text: str):
         return
 
     if user_states.get(psid) == "offer_confirm":
-        if text == "1":
+        if text in ("1", "1️⃣", "نعم"):
             offer_key = temp_data.get(psid, {}).get("offer")
             if not offer_key or offer_key not in OFFERS:
                 user_states[psid] = "menu"
@@ -321,8 +350,7 @@ def handle_message(psid: str, text: str):
                 return
             pkg, name, dur = OFFERS[offer_key]
             send_fb(psid, f"⏳ جاري تفعيل {name}...")
-            res, code = djezzy_api("POST", f"subscribers/activate-product/{msisdn}", token,
-                                   {"packageCode": pkg})
+            res, code = api_activate(msisdn, pkg)
             
             if code in (200, 201):
                 save_activation(psid, msisdn, offer_key)
@@ -338,23 +366,18 @@ def handle_message(psid: str, text: str):
         return
 
     # ── 3: الرصيد المالي ──
-    if text == "3":
-        res, code = djezzy_api("GET", f"subscribers/main-balance/{msisdn}", token)
+    if text in ("3", "3️⃣"):
+        res, code = api_balance(msisdn)
         if code == 200 and res:
-            d = res.get("data", res)
-            bal = d.get("mainBalance", "0.0")
-            due = d.get("due", 0)
+            bal = res.get("balance", res.get("mainBalance", "0.0"))
             send_fb(psid, f"💰 الرصيد المالي\n──────────────\n"
-                          f"💵 الرصيد: {bal} دج\n"
-                          f"📋 المستحق: {due} دج\n\n" + main_menu())
-        elif code == 401:
-            send_fb(psid, "🔑 انتهت الجلسة. أرسل /start")
+                          f"💵 الرصيد: {bal} دج\n\n" + main_menu())
         else:
             send_fb(psid, "❌ تعذّر جلب الرصيد.\n\n" + main_menu())
         return
 
     # ── 6: تواصل على تيليجرام ──
-    if text == "6":
+    if text in ("6", "6️⃣"):
         send_fb(psid,
             "📢 تواصل معنا\n"
             "──────────────────\n"
@@ -362,7 +385,8 @@ def handle_message(psid: str, text: str):
             f"👉 {TELEGRAM_CHANNEL}\n\n" + main_menu())
         return
 
-    send_fb(psid, "🤖 لم أفهم طلبك.\n\n" + main_menu())
+    reply = smart_reply(text, is_logged_in=True)
+    send_fb(psid, reply)
 
 
 # ═══════════ Webhook ═══════════
